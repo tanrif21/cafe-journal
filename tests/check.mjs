@@ -1,0 +1,23 @@
+import {DatabaseSync} from 'node:sqlite';import fs from 'node:fs';import assert from 'node:assert/strict';import {postgresAdapter} from '../lib/database.mjs';import {dispatch,handleNode} from '../lib/server.mjs';
+const sqlite=new DatabaseSync(':memory:');sqlite.exec(fs.readFileSync('schema.sql','utf8'));const statements=[];const DB=postgresAdapter(async(text,params)=>{statements.push(text);const sql=text.replace(/\$\d+/g,'?');if(/^SELECT/i.test(sql)){const rows=sqlite.prepare(sql).all(...params);return{rows,rowCount:rows.length}}const r=sqlite.prepare(sql).run(...params);return{rows:[],rowCount:Number(r.changes)}});
+const env={DB,GROUP_PASSWORD:'local-test-password-only',SESSION_SECRET:'local-test-signing-key-012345678901234567890'};
+const request=(path,method='GET',body,extra={})=>new Request('https://cafe.test'+path,{method,headers:{Origin:'https://cafe.test',...extra},...(body!==undefined?{body}:{})});
+assert.equal((await dispatch(request('/'),'home',env)).headers.get('location'),'https://cafe.test/login');
+const loginPage=await dispatch(request('/login'),'login',env);assert.equal(loginPage.status,200);assert.ok((await loginPage.text()).includes('Group password'));
+assert.equal((await dispatch(request('/api/group'),'group',env)).status,401);
+const bad=await dispatch(request('/auth/login','POST','password=wrong'),'signin',env);assert.ok(bad.headers.get('location').includes('error=invalid'));
+const signed=await dispatch(request('/auth/login','POST',new URLSearchParams({password:env.GROUP_PASSWORD}).toString()),'signin',env);assert.equal(signed.status,303);const cookie=signed.headers.get('set-cookie').split(';')[0];const headers={Cookie:cookie};
+assert.equal((await dispatch(request('/','GET',undefined,headers),'home',env)).status,200);
+let group=await(await dispatch(request('/api/group','GET',undefined,headers),'group',env)).json();assert.equal(group.revision,0);assert.equal(group.visits.length,0);
+const state={people:['Tanvir','Labib','Adeeb','Rafi'],archived:[],visits:[{id:'visit-1',date:'2026-10-29',place:'Cafe',food:'Cha',collector:'Rafi',notes:'',cha:60,chaBy:['Rafi','Labib'],snacks:30,snackBy:['Adeeb']}]};
+const put=()=>request('/api/group','PUT',JSON.stringify({revision:0,state}),{...headers,'Content-Type':'application/json'});assert.equal((await dispatch(put(),'group',env)).status,200);assert.equal((await dispatch(put(),'group',env)).status,409);
+group=await(await dispatch(request('/api/group','GET',undefined,headers),'group',env)).json();assert.equal(group.visits[0].cha,60);assert.equal(group.people.length,4);
+assert.equal((await dispatch(request('/api/group','GET',undefined,{Cookie:cookie+'bad'}),'group',env)).status,401);
+assert.equal((await dispatch(request('/auth/login','POST','password=x',{Origin:'https://evil.test'}),'signin',env)).status,403);
+assert.equal((await dispatch(request('/auth/logout','GET',undefined,headers),'signout',env)).status,405);
+assert.ok((await dispatch(request('/auth/logout','POST','',headers),'signout',env)).headers.get('set-cookie').includes('Max-Age=0'));
+for(let i=0;i<10;i++)await dispatch(request('/auth/login','POST','password=wrong',{'x-real-ip':'blocked'}),'signin',env);assert.ok((await dispatch(request('/auth/login','POST','password=wrong',{'x-real-ip':'blocked'}),'signin',env)).headers.get('location').includes('error=wait'));
+assert.ok(statements.some(s=>s.includes('$1')));assert.ok(statements.every(s=>!s.includes('?')));
+const response={headers:{},setHeader(k,v){this.headers[k]=v},end(value){this.body=value}};await handleNode({method:'GET',url:'/',headers:{host:'cafe.test'}},response,'home');assert.equal(response.statusCode,302);assert.equal(response.headers.location,'https://cafe.test/login');
+const config=JSON.parse(fs.readFileSync('vercel.json','utf8'));for(const rule of config.rewrites){const api=rule.destination.replace('/api/','');assert.ok(fs.existsSync('api/'+api+'.mjs'))}
+console.log('PASS: Vercel routes, login/logout, cookie protection, validation, shared database reads/writes, conflicts, PostgreSQL parameter conversion and rate limits. Live Neon/Vercel verification requires your accounts.');

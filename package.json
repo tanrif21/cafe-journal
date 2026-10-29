@@ -1,0 +1,9 @@
+{
+  "name": "cafe-journal",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": "22.x"},
+  "scripts": {"build":"node scripts/check.mjs", "test":"node tests/check.mjs"},
+  "dependencies": {"@neondatabase/serverless":"1.0.2"}
+}
